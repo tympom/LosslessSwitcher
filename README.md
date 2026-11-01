@@ -11,6 +11,32 @@ Let's say if the next song that you are playing, is a Hi-Res Lossless track with
 
 The opposite happens, when the next track happens to have a lower sample rate. 
 
+## About this fork
+
+[tympom/LosslessSwitcher](https://github.com/tympom/LosslessSwitcher) builds on upstream `main` (2.0
+plus the #206 sample-rate family fallback) and [#225](https://github.com/vincentneo/LosslessSwitcher/pull/225)
+(stale sample-rate detection around track transitions). It adds:
+
+- **One switch per track change.** A decoder line logged after the change applies at once. One logged
+  just before it (possibly the previous track's) applies only if nothing better appears within 3 s.
+- **Readback.** After switching, the device's actual format is read back, a mismatch is retried once,
+  and the menu shows the readback rather than the requested rate.
+- **No depth-only switches.** With Bit Depth Switching on, bit depth changes only together with a sample
+  rate change, so tracks at the same rate never re-clock the DAC.
+- **Copy Recent Decisions** copies the last 30 decisions to the clipboard: track, trigger, the log line
+  used and its time relative to the change, the target, the readback, and notes.
+- **Use 44.1 kHz When No Lossless Format** (off by default) switches to 44.1 kHz when a track change logs
+  no lossless format, as with AAC or Dolby Atmos playback. Resume and seek never trigger it.
+- **Exact Track Matching (Needs Logging Profile)** (off by default) matches Music's `ampplay` format line
+  to the playing track by name, so a preloaded next track can't be mistaken for the current one. macOS
+  redacts those names as `<private>` unless
+  [Profiles/MusicPrivateLogging.mobileconfig](Profiles/MusicPrivateLogging.mobileconfig) is installed
+  (double-click it, then approve it in System Settings > General > Device Management). The profile un-hides
+  private log data for the `com.apple.Music` subsystem only. If names stay `<private>`, the copied
+  decisions say so and the time-window method is used instead.
+
+Regression tests: `Tests/Regression/run.sh` (see its README).
+
 ## Installation
 
 ### For macOS Big Sur 11.4 to macOS Sonoma 14.x

@@ -12,6 +12,7 @@ trap 'rm -rf "$test_dir"' EXIT
 xcrun swiftc -emit-module -emit-library -module-name Sweep "$sweep_source" \
     -o "$test_dir/libSweep.dylib" -emit-module-path "$test_dir/Sweep.swiftmodule"
 xcrun swiftc -I "$test_dir" -L "$test_dir" -lSweep \
-    "$repo_root/Quality/CMPlayerStuff.swift" "$repo_root/Tests/Regression/main.swift" \
+    "$repo_root/Quality/CMPlayerStuff.swift" "$repo_root/Quality/SwitchPolicy.swift" \
+    "$repo_root/Tests/Regression/main.swift" \
     -o "$test_dir/regression"
 DYLD_LIBRARY_PATH="$test_dir" "$test_dir/regression"

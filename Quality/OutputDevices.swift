@@ -43,6 +43,20 @@ class OutputDevices: ObservableObject {
     private var lastPlaybackPosition: Double?
     private var lastPlaybackObservation: Date?
     private var wasPlaying = false
+    private var resolvedGeneration = 0
+    private var decisions = DecisionLog()
+    private let logDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    private enum Trigger {
+        static let trackChange = "track change"
+        static let resume = "resume"
+        static let seek = "seek"
+    }
     var timerActive = false
     var timerCalls = 0
     
@@ -137,59 +151,155 @@ class OutputDevices: ObservableObject {
     }
     
     // All device and track state is accessed on the main queue. Only log reads
-    // run in the background; generation tokens reject results from old tracks.
-    func switchLatestSampleRate() {
-        beginDetection(at: Date())
-    }
-
-    private func beginDetection(at event: Date) {
+    // run in the background; generation tokens reject results from old tracks,
+    // and `resolvedGeneration` makes each change apply at most once.
+    private func beginDetection(at event: Date, trigger: String) {
         detectionGeneration += 1
         let generation = detectionGeneration
-        for delay in [0.35, 1.0, 2.0, 3.0] {
+        let track = currentTrack
+        let delays = [0.35, 1.0, 2.0, 3.0]
+        for (index, delay) in delays.enumerated() {
+            let isFinal = index == delays.count - 1
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.detectionGeneration == generation else { return }
+                guard let self, self.isPending(generation) else { return }
+                let exact = Defaults.shared.userPreferExactTrackMatching
                 self.processQueue.async { [weak self] in
                     guard let self else { return }
-                    let stats = self.getAllStats()
+                    let decoder = self.getAllStats()
+                    let ampplay = exact ? self.getAmpplayEntries() : nil
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, self.detectionGeneration == generation,
-                              let stat = RateSelection.candidate(stats, near: event) else { return }
-                        self.apply(stat)
+                        guard let self, self.isPending(generation) else { return }
+                        let choice = SwitchPolicy.choose(decoder: decoder, ampplay: ampplay, title: track?.title,
+                                                         event: event, isFinal: isFinal)
+                        self.handle(choice, event: event, trigger: trigger, track: track, generation: generation)
                     }
                 }
             }
         }
     }
 
-    private func apply(_ stat: CMPlayerStats) {
-        guard let device = selectedOutputDevice ?? defaultOutputDevice,
-              let supported = device.nominalSampleRates,
-              var rate = supported.min(by: { abs($0 - stat.sampleRate) < abs($1 - stat.sampleRate) })
-        else { return }
-        if Defaults.shared.userPreferSampleRateMultiples, rate != stat.sampleRate {
-            let sourceInt = Int(stat.sampleRate)
-            let baseRate = sourceInt % 44100 == 0 ? 44100 : 48000
-            let familyRates = supported.filter {
-                Int($0) % baseRate == 0 && $0 < stat.sampleRate
-            }
-            if let bestMatch = familyRates.max() { rate = bestMatch }
+    private func isPending(_ generation: Int) -> Bool {
+        detectionGeneration == generation && resolvedGeneration != generation
+    }
+
+    func getAmpplayEntries() -> [AmpplayEntry] {
+        do {
+            let entries = try Console.getRecentEntries(type: .music, seconds: SwitchPolicy.exactMatchLookback)
+            return AmpplayEntry.parse(entries)
         }
-        if enableBitDepthDetection {
-            guard let formats = getFormats(bestStat: stat, device: device),
-                  let format = formats.filter({ $0.mSampleRate == rate }).min(by: {
-                      abs(Int($0.mBitsPerChannel) - stat.bitDepth) < abs(Int($1.mBitsPerChannel) - stat.bitDepth)
-                  }) else { return }
-            setFormats(device: device, format: format)
-        } else if device.nominalSampleRate != rate {
-            device.setNominalSampleRate(rate)
-        }
-        // Display the hardware readback, not the requested rate.
-        if let actualRate = device.nominalSampleRate {
-            updateSampleRate(actualRate, bitDepth: device.streams(scope: .output)?.first?.physicalFormat.map { Int($0.mBitsPerChannel) })
+        catch {
+            print("[getAmpplayEntries, error] \(error)")
+            return []
         }
     }
 
-    func getFormats(bestStat: CMPlayerStats, device: AudioDevice) -> [AudioStreamBasicDescription]? {
+    private func handle(_ choice: SwitchChoice, event: Date, trigger: String, track: MediaTrack?, generation: Int) {
+        let trackName = [track?.artist, track?.title].compactMap { $0 }.joined(separator: " - ")
+        var record = DecisionRecord(time: Date(), track: trackName.isEmpty ? "unknown track" : trackName,
+                                    trigger: trigger, action: "")
+        switch choice {
+        case .wait:
+            return
+        case .use(let stat, let source, let note):
+            resolvedGeneration = generation
+            record.source = source.label
+            record.line = DecisionLog.describe(stat, event: event, formatter: logDateFormatter)
+            if let note { record.notes.append(note) }
+            apply(source: stat.sampleRate, bitDepth: stat.bitDepth, record: record, generation: generation)
+        case .none(let note):
+            resolvedGeneration = generation
+            if let note { record.notes.append(note) }
+            // Resume and seek log no new format line; only a track change may fall back.
+            if Defaults.shared.userPreferBaseRateFallback, trigger == Trigger.trackChange {
+                record.source = "fallback: no lossless line after a track change"
+                let device = selectedOutputDevice ?? defaultOutputDevice
+                let depth = device?.streams(scope: .output)?.first?.physicalFormat.map { Int($0.mBitsPerChannel) }
+                apply(source: 44100, bitDepth: depth ?? 24, record: record, generation: generation)
+            } else {
+                record.action = "no change: no usable format line"
+                decisions.append(record)
+            }
+        }
+    }
+
+    private func apply(source rate: Double, bitDepth: Int, record: DecisionRecord, generation: Int) {
+        var record = record
+        guard let device = selectedOutputDevice ?? defaultOutputDevice,
+              let supported = device.nominalSampleRates,
+              let target = SwitchPolicy.targetRate(source: rate, supported: supported,
+                                                   preferMultiples: Defaults.shared.userPreferSampleRateMultiples)
+        else {
+            record.action = "no change: no output device or supported rates"
+            decisions.append(record)
+            return
+        }
+        let currentRate = device.nominalSampleRate
+        var targetDepth: Int?
+        var format: AudioStreamBasicDescription?
+        if enableBitDepthDetection {
+            let formats = (getFormats(device: device) ?? []).filter { $0.mSampleRate == target }
+            if let depth = SwitchPolicy.nearestBitDepth(source: bitDepth, available: formats.map { Int($0.mBitsPerChannel) }) {
+                targetDepth = depth
+                format = formats.first { Int($0.mBitsPerChannel) == depth }
+            }
+        }
+        record.target = DecisionLog.describe(rate: target, bitDepth: targetDepth)
+        guard SwitchPolicy.needsSwitch(currentRate: currentRate, targetRate: target) else {
+            record.action = "no change: device already at \(DecisionLog.describe(rate: currentRate, bitDepth: nil))"
+            if targetDepth != nil, targetDepth != currentPhysicalBitDepth(device) {
+                record.notes.append("bit depth left at \(currentPhysicalBitDepth(device).map { String($0) } ?? "?") bit: depth changes only with a rate change")
+            }
+            decisions.append(record)
+            updateSampleRate(currentRate ?? target, bitDepth: currentPhysicalBitDepth(device))
+            return
+        }
+        record.action = "switched from \(DecisionLog.describe(rate: currentRate, bitDepth: currentPhysicalBitDepth(device)))"
+        decisions.append(record)
+        setFormat(device: device, rate: target, format: format)
+        verify(device: device, rate: target, format: format, recordTime: record.time, retried: false, generation: generation)
+    }
+
+    private func setFormat(device: AudioDevice, rate: Double, format: AudioStreamBasicDescription?) {
+        if let format {
+            setFormats(device: device, format: format)
+        } else {
+            device.setNominalSampleRate(rate)
+        }
+    }
+
+    /// Reads the device back after CoreAudio settles; retries a mismatch once (only
+    /// while the same change is current) and shows the readback, not the request.
+    private func verify(device: AudioDevice, rate: Double, format: AudioStreamBasicDescription?,
+                        recordTime: Date, retried: Bool, generation: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            let actualRate = device.nominalSampleRate
+            let actualDepth = self.currentPhysicalBitDepth(device)
+            let rateOK = actualRate == rate
+            let depthOK = format.map { Int($0.mBitsPerChannel) == actualDepth } ?? true
+            let readback = DecisionLog.describe(rate: actualRate, bitDepth: actualDepth)
+            if !(rateOK && depthOK), !retried, self.detectionGeneration == generation {
+                self.decisions.update(recordAt: recordTime) { $0.notes.append("readback \(readback) mismatched; retried once") }
+                self.setFormat(device: device, rate: rate, format: format)
+                self.verify(device: device, rate: rate, format: format, recordTime: recordTime, retried: true, generation: generation)
+                return
+            }
+            self.decisions.update(recordAt: recordTime) {
+                $0.readback = readback + (rateOK && depthOK ? "" : " (MISMATCH)")
+            }
+            if let actualRate { self.updateSampleRate(actualRate, bitDepth: actualDepth) }
+        }
+    }
+
+    private func currentPhysicalBitDepth(_ device: AudioDevice) -> Int? {
+        device.streams(scope: .output)?.first?.physicalFormat.map { Int($0.mBitsPerChannel) }
+    }
+
+    func recentDecisionsReport() -> String {
+        decisions.report(device: (selectedOutputDevice ?? defaultOutputDevice)?.name)
+    }
+
+    func getFormats(device: AudioDevice) -> [AudioStreamBasicDescription]? {
         // new sample rate + bit depth detection route
         let streams = device.streams(scope: .output)
         let availableFormats = streams?.first?.availablePhysicalFormats?.compactMap({$0.mFormat})
@@ -261,12 +371,14 @@ class OutputDevices: ObservableObject {
         if let position, let previous = lastPlaybackPosition, let date = lastPlaybackObservation {
             didSeek = abs(position - previous - observedAt.timeIntervalSince(date)) > 1.0
         }
-        let shouldDetect = track != currentTrack || !wasPlaying || didSeek
+        let trigger: String? = track != currentTrack ? Trigger.trackChange
+            : !wasPlaying ? Trigger.resume
+            : didSeek ? Trigger.seek : nil
         previousTrack = currentTrack
         currentTrack = track
         lastPlaybackPosition = position
         lastPlaybackObservation = observedAt
         wasPlaying = true
-        if shouldDetect { beginDetection(at: observedAt) }
+        if let trigger { beginDetection(at: observedAt, trigger: trigger) }
     }
 }

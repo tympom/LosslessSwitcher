@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Music private log data</string>
+			<key>PayloadIdentifier</key>
+			<string>com.github.tympom.LosslessSwitcher.logging.music</string>
+			<key>PayloadType</key>
+			<string>com.apple.system.logging</string>
+			<key>PayloadUUID</key>
+			<string>EC1AB5D9-40C8-47C7-AF47-5C56DEE4C5F2</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>Subsystems</key>
+			<dict>
+				<key>com.apple.Music</key>
+				<dict>
+					<key>DEFAULT-OPTIONS</key>
+					<dict>
+						<key>Enable-Private-Data</key>
+						<true/>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>Shows private data in com.apple.Music log messages (such as track names) so LosslessSwitcher's Exact Track Matching can match format lines to the playing track. Other subsystems stay redacted. Remove the profile to undo.</string>
+	<key>PayloadDisplayName</key>
+	<string>LosslessSwitcher: Music log track names</string>
+	<key>PayloadIdentifier</key>
+	<string>com.github.tympom.LosslessSwitcher.logging</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>6CE481A8-4AB9-4FC1-8FB1-9AF91A02358E</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>

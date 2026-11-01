@@ -45,7 +45,34 @@ struct MenuView: View {
                     }
                 }
             }
-            
+
+            Button {
+                defaults.userPreferBaseRateFallback.toggle()
+            } label: {
+                HStack {
+                    Text("Use 44.1 kHz When No Lossless Format")
+                    if defaults.userPreferBaseRateFallback {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Button {
+                defaults.userPreferExactTrackMatching.toggle()
+            } label: {
+                HStack {
+                    Text("Exact Track Matching (Needs Logging Profile)")
+                    if defaults.userPreferExactTrackMatching {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Button("Copy Recent Decisions") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(outputDevices.recentDecisionsReport(), forType: .string)
+            }
+
             Menu {
                 Button {
                     outputDevices.selectedOutputDevice = nil

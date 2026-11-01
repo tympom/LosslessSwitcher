@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import OSLog
 import Sweep
 
 struct CMPlayerStats {
@@ -14,6 +13,7 @@ struct CMPlayerStats {
     let bitDepth: Int
     let date: Date
     let priority: Int
+    var message: String? = nil
 }
 
 // Decoder logs do not carry a reliable public track identifier. Use a bounded
@@ -93,7 +93,7 @@ class CMPlayerParser {
                   let rate = Double(String(rateText).trimmingCharacters(in: .whitespacesAndNewlines)),
                   let depth = Int(String(depthText).trimmingCharacters(in: .whitespacesAndNewlines))
             else { return nil }
-            return CMPlayerStats(sampleRate: rate, bitDepth: depth, date: entry.date, priority: 5)
+            return CMPlayerStats(sampleRate: rate, bitDepth: depth, date: entry.date, priority: 5, message: message)
         }
     }
 
